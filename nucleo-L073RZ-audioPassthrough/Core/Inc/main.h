@@ -37,6 +37,14 @@ extern "C" {
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
 
+typedef struct { // circular buffer data structure
+    uint16_t * const buffer; // constant pointer to a variable memory space
+    uint32_t head;
+    int32_t tail;
+    const uint32_t maxlen;
+} circbuff_t;
+
+
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/

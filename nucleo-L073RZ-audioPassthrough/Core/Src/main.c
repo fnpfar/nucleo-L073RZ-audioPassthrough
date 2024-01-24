@@ -37,8 +37,8 @@
 /* USER CODE BEGIN PD */
 
 // Note: Max RAM: 20KB, Max flash: 192KB
-#define ADC_BUFFER_SIZE 1024 // size in samples of the DMA ADC buffer (two halves)
-#define DAC_BUFFER_SIZE 1024 // size in samples of the DMA DAC buffer (two halves)
+#define ADC_BUFFER_SIZE 128 // size in samples of the DMA ADC buffer (two halves). must be even
+#define DAC_BUFFER_SIZE 128 // size in samples of the DMA DAC buffer (two halves). must be even
 #define SINE_TABLE_SIZE 512 // size in samples of the sine wave table (1 period)
 #define SINE_TABLE_AMPLITUDE 0.8 // amplitude of the precomputed sine wave. max = 1
 #define DAC_MAX_VALUE 4095
@@ -67,15 +67,19 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 
 uint16_t button_counter = 0; // cyclic counter for user button edges
-uint8_t flag_first_DAC_half_buffer = 0; // flags for the DAC half buffers
-uint8_t flag_second_DAC_half_buffer = 0;
-uint8_t flag_first_ADC_half_buffer = 0; // flags for the ADC half buffers
-uint8_t flag_second_ADC_half_buffer = 0;
 
 uint16_t sine_wave_table[SINE_TABLE_SIZE];
-uint16_t dac_dma_buffer[DAC_BUFFER_SIZE];
-uint16_t adc_dma_buffer[ADC_BUFFER_SIZE];
 uint8_t uart_buf[UART_BUFFER_SIZE];
+
+uint16_t adc_dma_buffer[ADC_BUFFER_SIZE]; // ADC circular buffer memory
+circbuff_t adc_buffer = { // ADC circular buffer struct
+		.buffer = adc_dma_buffer, .head = 0, .tail = 0, .maxlen =
+				ADC_BUFFER_SIZE };
+
+uint16_t dac_dma_buffer[ADC_BUFFER_SIZE]; // DAC circular buffer memory
+circbuff_t dac_buffer = { // DAC circular buffer struct
+		.buffer = dac_dma_buffer, .head = 0, .tail = 0, .maxlen =
+				DAC_BUFFER_SIZE };
 
 /* USER CODE END PV */
 
@@ -94,6 +98,33 @@ static void MX_TIM3_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/**
+ * Pushes a sample into a circular buffer
+ */
+int circular_buffer_push(circbuff_t *c, uint16_t *data) {
+	int32_t next = (c->head + 1) % c->maxlen; //next is where head will point to after this write
+	if (next == c->tail) {
+		return -1; //throw error if buffer is full
+	} else {
+		c->buffer[c->head] = (uint16_t) *data;  //load data in head position
+		c->head = next;                        //update head pointer
+		return 0;
+	}
+}
+
+/**
+ * Pops a sample from a circular buffer
+ */
+int circular_buffer_pop(circbuff_t *c, uint16_t *data) {
+	if (c->head == c->tail) { //the buffer is empty
+		return -1;
+	}
+	int32_t next = (c->tail + 1) % c->maxlen; //next is where tail will point to after this read.
+	*data = c->buffer[c->tail];  //read data in tail position
+	c->tail = next;              //update tail pointer
+	return 0;
+}
 
 /* USER CODE END 0 */
 
@@ -153,7 +184,7 @@ int main(void) {
 	// Timer 3 start (for encoder)
 	HAL_TIM_Encoder_Start_IT(&htim3, TIM_CHANNEL_ALL);
 
-	// Timer 6 start (for DAC)
+	// Timer 6 start (for DAC & ADC)
 	HAL_TIM_Base_Start(&htim6); // starts timer 6
 	//HAL_TIM_Base_Start_IT(&htim6) // with interrupts
 
@@ -162,7 +193,6 @@ int main(void) {
 	HAL_ADC_Start_DMA(&hadc, (uint32_t*) adc_dma_buffer, ADC_BUFFER_SIZE);
 
 	// DAC DMA start
-	//HAL_DAC_Start(&hdac, DAC_CHANNEL_1); // start DAC
 	HAL_DAC_Start_DMA(&hdac, DAC_CHANNEL_1, (uint32_t*) dac_dma_buffer,
 	DAC_BUFFER_SIZE, DAC_ALIGN_12B_R);
 
@@ -171,54 +201,16 @@ int main(void) {
 	/* Infinite loop */
 	/* USER CODE BEGIN WHILE */
 
-	/**
-	 uint16_t sine1 = 0; // sinusoidals one sample buffer
-	 uint16_t sine2 = 0;
-	 uint16_t n_0_sine1 = 0; // initial phase offset of the sine wave table per half buffer
-	 uint16_t n_0_sine2 = 0;
-	 uint16_t sine1_freq = 0; // frequency scalers for both tones
-	 uint16_t sine2_freq = 0;
-	 **/
-
+	uint16_t sample;
+	//uint32_t n = 0;
 	while (1) {
 
-		//sine1_freq = (uint16_t)(value_adc >> 3); // sample ADC to obtain sine wave 1  frequency
-		//sine2_freq = TIM3->CNT; // sample rotary encoder counter to obtain sine wave 2  frequency
+		while (!circular_buffer_pop(&adc_buffer, &sample) == 0) {} // pop sample from ADC buffer
 
-		if (flag_first_DAC_half_buffer == 1) { // first half buffer transfer complete
-			flag_first_DAC_half_buffer = 0; // resets flag
+		//sample = sample + (sine_wave_table[n] >> 2);
+		//n = (n + 1) % SINE_TABLE_SIZE;
 
-			//for (int n = 0; n < DAC_BUFFER_SIZE / 2; n++) { // update first half buffer samples
-			//dac_dma_buffer[n] = (uint16_t) (dac_dma_buffer[n] * 0.96); // amplitude decay
-			//sine1 = sine_wave_table[(sine1_freq * n + n_0_sine1) % SINE_TABLE_SIZE];
-			//sine2 = sine_wave_table[(sine2_freq * n + n_0_sine2) % SINE_TABLE_SIZE];
-			//dac_dma_buffer[n] = (sine1 + sine2) >> 1; // mix both sines & scale
-			//}
-			//n_0_sine1 = (sine1_freq * (DAC_BUFFER_SIZE / 2) + n_0_sine1) % SINE_TABLE_SIZE; // updates next sample to read
-			//n_0_sine2 = (sine2_freq * (DAC_BUFFER_SIZE / 2) + n_0_sine2) % SINE_TABLE_SIZE;
-
-			for (int n = 0; n < DAC_BUFFER_SIZE / 2; n++) {
-				dac_dma_buffer[n] = adc_dma_buffer[n];
-			}
-		}
-
-		if (flag_second_DAC_half_buffer == 1) { // second half buffer transfer complete
-			flag_second_DAC_half_buffer = 0;  // resets flag
-
-			//for (int n = 0; n < DAC_BUFFER_SIZE / 2; n++) { // update second half buffer samples
-			//dac_dma_buffer[n] = (uint16_t) (dac_dma_buffer[n] * 0.96); // amplitude decay
-			//sine1 = sine_wave_table[(sine1_freq * n + n_0_sine1) % SINE_TABLE_SIZE];
-			//sine2 = sine_wave_table[(sine2_freq * n + n_0_sine2) % SINE_TABLE_SIZE];
-			//dac_dma_buffer[n + DAC_BUFFER_SIZE / 2] = (sine1 + sine2) >> 1; // mix both sines & scale
-			//}
-			//n_0_sine1 = (sine1_freq * (DAC_BUFFER_SIZE / 2) + n_0_sine1) % SINE_TABLE_SIZE;
-			//n_0_sine2 = (sine2_freq * (DAC_BUFFER_SIZE / 2) + n_0_sine2) % SINE_TABLE_SIZE;
-
-			for (int n = 0; n < DAC_BUFFER_SIZE / 2; n++) {
-				dac_dma_buffer[n + DAC_BUFFER_SIZE / 2] = adc_dma_buffer[n
-						+ DAC_BUFFER_SIZE / 2];
-			}
-		}
+		while (!circular_buffer_push(&dac_buffer, &sample) == 0) {} // push sample to DAC buffer
 
 		/* USER CODE END WHILE */
 
@@ -596,22 +588,20 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 }
 
 void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
-	flag_first_DAC_half_buffer = 1;
+	dac_buffer.tail = DAC_BUFFER_SIZE / 2;
 }
 
 void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
-	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_8);
-	flag_second_DAC_half_buffer = 1;
+	dac_buffer.tail = 0;
 }
 
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc) {
-	//HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_9);
-	flag_first_ADC_half_buffer = 1;
+	adc_buffer.head = ADC_BUFFER_SIZE / 2;
 }
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
-	HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_9);
-	flag_second_DAC_half_buffer = 1;
+	adc_buffer.head = 0;
+
 }
 
 /*
