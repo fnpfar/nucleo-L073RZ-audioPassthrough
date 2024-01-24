@@ -202,13 +202,15 @@ int main(void) {
 	/* USER CODE BEGIN WHILE */
 
 	uint16_t sample;
-	//uint32_t n = 0;
+	uint32_t n = 0;
 	while (1) {
 
 		while (!circular_buffer_pop(&adc_buffer, &sample) == 0) {} // pop sample from ADC buffer
 
-		//sample = sample + (sine_wave_table[n] >> 2);
-		//n = (n + 1) % SINE_TABLE_SIZE;
+		if (button_counter % 2 == 0){ // when USER button is toggled
+			sample = sample + (sine_wave_table[n] >> 2); // superposes a sine on the output
+			n = (n + 1) % SINE_TABLE_SIZE;
+		}
 
 		while (!circular_buffer_push(&dac_buffer, &sample) == 0) {} // push sample to DAC buffer
 
