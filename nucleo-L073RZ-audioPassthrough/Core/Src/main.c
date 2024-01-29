@@ -25,6 +25,8 @@
 #include <string.h>
 #include <math.h>
 
+#include "circular_buffer.h" // type and methods to use a circular buffer
+#include "double_buffer.h" // type and methods to use a circular buffer
 #include "wavetable.h" // holds a wave table: uint16_t flash_table, stored in flash
 /* USER CODE END Includes */
 
@@ -37,9 +39,10 @@
 /* USER CODE BEGIN PD */
 
 // Note: Max RAM: 20KB, Max flash: 192KB
-#define ADC_BUFFER_SIZE 128 // size in samples of the DMA ADC buffer (two halves). must be even
-#define DAC_BUFFER_SIZE 128 // size in samples of the DMA DAC buffer (two halves). must be even
-#define SINE_TABLE_SIZE 512 // size in samples of the sine wave table (1 period)
+#define ADC_BUFFER_SIZE 512 // size in samples of the DMA ADC buffer (two halves). must be even
+#define DAC_BUFFER_SIZE 512 // size in samples of the DMA DAC buffer (two halves). must be even
+#define FIR_BUFFER_SIZE 512
+#define SINE_TABLE_SIZE 4096 // size in samples of the sine wave table (1 period)
 #define SINE_TABLE_AMPLITUDE 0.8 // amplitude of the precomputed sine wave. max = 1
 #define DAC_MAX_VALUE 4095
 #define UART_BUFFER_SIZE 100
@@ -72,14 +75,21 @@ uint16_t sine_wave_table[SINE_TABLE_SIZE];
 uint8_t uart_buf[UART_BUFFER_SIZE];
 
 uint16_t adc_dma_buffer[ADC_BUFFER_SIZE]; // ADC circular buffer memory
-circbuff_t adc_buffer = { // ADC circular buffer struct
-		.buffer = adc_dma_buffer, .head = 0, .tail = 0, .maxlen =
+doublebuff_t adc_buffer = { // ADC circular buffer struct
+		.buffer = adc_dma_buffer, .first_half_ready = 0, .second_half_ready = 0,
+				.next_pos_to_process = 0, .maxlen =
 				ADC_BUFFER_SIZE };
 
-uint16_t dac_dma_buffer[ADC_BUFFER_SIZE]; // DAC circular buffer memory
-circbuff_t dac_buffer = { // DAC circular buffer struct
-		.buffer = dac_dma_buffer, .head = 0, .tail = 0, .maxlen =
+uint16_t dac_dma_buffer[DAC_BUFFER_SIZE]; // DAC circular buffer memory
+doublebuff_t dac_buffer = { // DAC circular buffer struct
+		.buffer = dac_dma_buffer, .first_half_ready = 0, .second_half_ready = 0,
+				.next_pos_to_process = 0, .maxlen =
 				DAC_BUFFER_SIZE };
+
+uint16_t fir_buffer_space[FIR_BUFFER_SIZE]; // DAC circular buffer memory
+circbuff_t fir_buffer = { // DAC circular buffer struct
+		.buffer = fir_buffer_space, .head = 0, .tail = 0, .maxlen =
+		FIR_BUFFER_SIZE };
 
 /* USER CODE END PV */
 
@@ -98,33 +108,6 @@ static void MX_TIM3_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-/**
- * Pushes a sample into a circular buffer
- */
-int circular_buffer_push(circbuff_t *c, uint16_t *data) {
-	int32_t next = (c->head + 1) % c->maxlen; //next is where head will point to after this write
-	if (next == c->tail) {
-		return -1; //throw error if buffer is full
-	} else {
-		c->buffer[c->head] = (uint16_t) *data;  //load data in head position
-		c->head = next;                        //update head pointer
-		return 0;
-	}
-}
-
-/**
- * Pops a sample from a circular buffer
- */
-int circular_buffer_pop(circbuff_t *c, uint16_t *data) {
-	if (c->head == c->tail) { //the buffer is empty
-		return -1;
-	}
-	int32_t next = (c->tail + 1) % c->maxlen; //next is where tail will point to after this read.
-	*data = c->buffer[c->tail];  //read data in tail position
-	c->tail = next;              //update tail pointer
-	return 0;
-}
 
 /* USER CODE END 0 */
 
@@ -184,6 +167,13 @@ int main(void) {
 	// Timer 3 start (for encoder)
 	HAL_TIM_Encoder_Start_IT(&htim3, TIM_CHANNEL_ALL);
 
+	// Preloads FIR buffer with some zeros
+	for (int i = 0; i < 10; i++) {
+		uint16_t zero = 0;
+		while (!circular_buffer_push(&fir_buffer, &zero) == 0) {
+		}
+	}
+
 	// Timer 6 start (for DAC & ADC)
 	HAL_TIM_Base_Start(&htim6); // starts timer 6
 	//HAL_TIM_Base_Start_IT(&htim6) // with interrupts
@@ -202,17 +192,22 @@ int main(void) {
 	/* USER CODE BEGIN WHILE */
 
 	uint16_t sample;
-	uint32_t n = 0;
+	//uint32_t n = 0;
+	//uint16_t coeffs[] = { 1 };
+	//uint16_t order = 1;
+
 	while (1) {
 
-		while (!circular_buffer_pop(&adc_buffer, &sample) == 0) {} // pop sample from ADC buffer
-
-		if (button_counter % 2 == 0){ // when USER button is toggled
-			sample = sample + (sine_wave_table[n] >> 2); // superposes a sine on the output
-			n = (n + 1) % SINE_TABLE_SIZE;
+		if (adc_double_buffer_pop(&adc_buffer, &sample) == 0) {
+			dac_double_buffer_push(&dac_buffer, &sample);
 		}
 
-		while (!circular_buffer_push(&dac_buffer, &sample) == 0) {} // push sample to DAC buffer
+		/*
+		 if (button_counter % 2 == 0) { // when USER button is toggled
+		 sample = sample + (sine_wave_table[n] >> 2); // superposes a sine on the output
+		 n = (n + 1) % SINE_TABLE_SIZE;
+		 }
+		 */
 
 		/* USER CODE END WHILE */
 
@@ -426,7 +421,7 @@ static void MX_TIM6_Init(void) {
 	htim6.Instance = TIM6;
 	htim6.Init.Prescaler = 0;
 	htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
-	htim6.Init.Period = 333;
+	htim6.Init.Period = 730;
 	htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
 	if (HAL_TIM_Base_Init(&htim6) != HAL_OK) {
 		Error_Handler();
@@ -589,21 +584,20 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 
 }
 
-void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
-	dac_buffer.tail = DAC_BUFFER_SIZE / 2;
-}
-
-void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
-	dac_buffer.tail = 0;
-}
-
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc) {
-	adc_buffer.head = ADC_BUFFER_SIZE / 2;
+	adc_buffer.first_half_ready = 1;
 }
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc) {
-	adc_buffer.head = 0;
+	adc_buffer.second_half_ready = 1;
+}
 
+void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
+	dac_buffer.first_half_ready = 1;
+}
+
+void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac) {
+	dac_buffer.second_half_ready = 1;
 }
 
 /*
