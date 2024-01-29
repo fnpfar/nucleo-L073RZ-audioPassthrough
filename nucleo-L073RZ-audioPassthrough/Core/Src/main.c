@@ -40,9 +40,9 @@
 
 // Note: Max RAM: 20KB, Max flash: 192KB
 #define ADC_BUFFER_SIZE 512 // size in samples of the DMA ADC buffer (two halves). must be even
+#define AUX_BUFFER_SIZE 512
 #define DAC_BUFFER_SIZE 512 // size in samples of the DMA DAC buffer (two halves). must be even
-#define FIR_BUFFER_SIZE 512
-#define SINE_TABLE_SIZE 4096 // size in samples of the sine wave table (1 period)
+#define SINE_TABLE_SIZE 128 // size in samples of the sine wave table (1 period)
 #define SINE_TABLE_AMPLITUDE 0.8 // amplitude of the precomputed sine wave. max = 1
 #define DAC_MAX_VALUE 4095
 #define UART_BUFFER_SIZE 100
@@ -71,9 +71,11 @@ UART_HandleTypeDef huart2;
 
 uint16_t button_counter = 0; // cyclic counter for user button edges
 
+// Array buffers
 uint16_t sine_wave_table[SINE_TABLE_SIZE];
 uint8_t uart_buf[UART_BUFFER_SIZE];
 
+// Double buffers
 uint16_t adc_dma_buffer[ADC_BUFFER_SIZE]; // ADC circular buffer memory
 doublebuff_t adc_buffer = { // ADC circular buffer struct
 		.buffer = adc_dma_buffer, .first_half_ready = 0, .second_half_ready = 0,
@@ -86,10 +88,11 @@ doublebuff_t dac_buffer = { // DAC circular buffer struct
 				.next_pos_to_process = 0, .maxlen =
 				DAC_BUFFER_SIZE };
 
-uint16_t fir_buffer_space[FIR_BUFFER_SIZE]; // DAC circular buffer memory
-circbuff_t fir_buffer = { // DAC circular buffer struct
-		.buffer = fir_buffer_space, .head = 0, .tail = 0, .maxlen =
-		FIR_BUFFER_SIZE };
+// Circular buffers
+uint16_t aux_buffer_space[AUX_BUFFER_SIZE]; // aux buffer memory space
+circbuff_t auxiliar_buffer = { // DAC circular buffer struct
+		.buffer = aux_buffer_space, .head = 0, .tail = 0, .maxlen =
+		AUX_BUFFER_SIZE };
 
 /* USER CODE END PV */
 
@@ -170,7 +173,7 @@ int main(void) {
 	// Preloads FIR buffer with some zeros
 	for (int i = 0; i < 10; i++) {
 		uint16_t zero = 0;
-		while (!circular_buffer_push(&fir_buffer, &zero) == 0) {
+		while (!circular_buffer_push(&auxiliar_buffer, &zero) == 0) {
 		}
 	}
 
@@ -199,14 +202,19 @@ int main(void) {
 	while (1) {
 
 		if (adc_double_buffer_pop(&adc_buffer, &sample) == 0) {
+			circular_buffer_push(&auxiliar_buffer, &sample);
+		}
+
+		if (circular_buffer_pop(&auxiliar_buffer, &sample) == 0) {
 			dac_double_buffer_push(&dac_buffer, &sample);
 		}
 
+
 		/*
-		 if (button_counter % 2 == 0) { // when USER button is toggled
-		 sample = sample + (sine_wave_table[n] >> 2); // superposes a sine on the output
-		 n = (n + 1) % SINE_TABLE_SIZE;
-		 }
+		if (button_counter % 2 == 0) { // when USER button is toggled
+		sample = sample/2 + (sine_wave_table[n]/2); // superposes a sine on the output
+		n = (n + 1) % SINE_TABLE_SIZE;
+			}
 		 */
 
 		/* USER CODE END WHILE */
