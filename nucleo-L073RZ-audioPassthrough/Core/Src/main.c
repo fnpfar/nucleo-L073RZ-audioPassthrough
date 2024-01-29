@@ -195,7 +195,7 @@ int main(void) {
 	/* USER CODE BEGIN WHILE */
 
 	uint16_t sample;
-	//uint32_t n = 0;
+	uint32_t n = 0;
 	//uint16_t coeffs[] = { 1 };
 	//uint16_t order = 1;
 
@@ -206,16 +206,12 @@ int main(void) {
 		}
 
 		if (circular_buffer_pop(&auxiliar_buffer, &sample) == 0) {
+			if (button_counter % 2 == 0) { // when USER button is toggled
+				sample = sample / 2 + (sine_wave_table[n] / 2); // superposes a sine on the output
+				n = (n + 1) % SINE_TABLE_SIZE;
+			}
 			dac_double_buffer_push(&dac_buffer, &sample);
 		}
-
-
-		/*
-		if (button_counter % 2 == 0) { // when USER button is toggled
-		sample = sample/2 + (sine_wave_table[n]/2); // superposes a sine on the output
-		n = (n + 1) % SINE_TABLE_SIZE;
-			}
-		 */
 
 		/* USER CODE END WHILE */
 
